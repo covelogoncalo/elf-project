@@ -1,6 +1,7 @@
 #include <elf.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 long virtual_to_offset(Elf64_Phdr *phdrs, int count, Elf64_Addr vaddr)
 {
@@ -22,12 +23,123 @@ long virtual_to_offset(Elf64_Phdr *phdrs, int count, Elf64_Addr vaddr)
 	return -1;
 }
 
+void print_load_segment(Elf64_Phdr *phdr, int index)
+{
+	printf("\nPT_LOAD %d\n", index);
+	printf("  Offset : 0x%lx\n", phdr->p_offset);
+	printf("  VAddr  : 0x%lx\n", phdr->p_vaddr);
+	printf("  FileSz : 0x%lx\n", phdr->p_filesz);
+	printf("  MemSz  : 0x%lx\n", phdr->p_memsz);
+	printf("  Flags  : ");
+
+	if (phdr->p_flags & PF_R)
+		printf("R");
+	if (phdr->p_flags & PF_W)
+		printf("W");
+	if (phdr->p_flags & PF_X)
+		printf("X");
+
+	printf("\n");
+	printf("  File end : 0x%lx\n",
+		phdr->p_offset + phdr->p_filesz);
+	printf("  VA end   : 0x%lx\n",
+		phdr->p_vaddr + phdr->p_memsz);
+
+	if (phdr->p_flags & PF_X)
+		printf("  -> Segment executable\n");
+}
+
+void print_sections(FILE *file, Elf64_Ehdr *header)
+{
+	Elf64_Shdr *sections;
+	Elf64_Shdr *string_section;
+	char *strings;
+	int i;
+
+	sections = malloc(sizeof(Elf64_Shdr) * header->e_shnum);
+	if (sections == NULL)
+	{
+		printf("Erreur malloc sections\n");
+		return;
+	}
+
+	if (fseek(file, header->e_shoff, SEEK_SET) != 0)
+	{
+		printf("Erreur de positionnement sections\n");
+		free(sections);
+		return;
+	}
+
+	if (fread(sections, sizeof(Elf64_Shdr),
+		header->e_shnum, file) != header->e_shnum)
+	{
+		printf("Erreur de lecture des sections\n");
+		free(sections);
+		return;
+	}
+
+	string_section = &sections[header->e_shstrndx];
+
+	strings = malloc(string_section->sh_size);
+	if (strings == NULL)
+	{
+		printf("Erreur malloc noms sections\n");
+		free(sections);
+		return;
+	}
+
+	if (fseek(file, string_section->sh_offset, SEEK_SET) != 0)
+	{
+		printf("Erreur de positionnement noms sections\n");
+		free(strings);
+		free(sections);
+		return;
+	}
+
+	if (fread(strings, 1, string_section->sh_size, file)
+		!= string_section->sh_size)
+	{
+		printf("Erreur de lecture noms sections\n");
+		free(strings);
+		free(sections);
+		return;
+	}
+
+	printf("\nSections:\n");
+
+	for (i = 0; i < header->e_shnum; i++)
+	{
+		printf("\n[%d] %s\n",
+			i,
+			strings + sections[i].sh_name);
+
+		printf("  Type   : 0x%x\n", sections[i].sh_type);
+		printf("  Offset : 0x%lx\n", sections[i].sh_offset);
+		printf("  Addr   : 0x%lx\n", sections[i].sh_addr);
+		printf("  Size   : 0x%lx\n", sections[i].sh_size);
+		printf("  Flags  : ");
+
+		if (sections[i].sh_flags & SHF_ALLOC)
+			printf("A");
+		if (sections[i].sh_flags & SHF_WRITE)
+			printf("W");
+		if (sections[i].sh_flags & SHF_EXECINSTR)
+			printf("X");
+
+		printf("\n");
+	}
+
+	free(strings);
+	free(sections);
+}
+
 int main(int argc, char **argv)
 {
 	FILE *file;
 	Elf64_Ehdr header;
 	Elf64_Phdr *phdrs;
 	int i;
+	long offset;
 
 	if (argc != 2)
 	{
@@ -80,8 +192,8 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	if (fread(phdrs, sizeof(Elf64_Phdr), header.e_phnum, file)
-		!= header.e_phnum)
+	if (fread(phdrs, sizeof(Elf64_Phdr),
+		header.e_phnum, file) != header.e_phnum)
 	{
 		printf("Erreur de lecture des program headers\n");
 		free(phdrs);
@@ -96,28 +208,13 @@ int main(int argc, char **argv)
 		if (phdrs[i].p_type != PT_LOAD)
 			continue;
 
-		printf("\nPT_LOAD %d\n", i);
-		printf("  Offset : 0x%lx\n", phdrs[i].p_offset);
-		printf("  VAddr  : 0x%lx\n", phdrs[i].p_vaddr);
-		printf("  FileSz : 0x%lx\n", phdrs[i].p_filesz);
-		printf("  MemSz  : 0x%lx\n", phdrs[i].p_memsz);
-
-		printf("  Flags  : ");
-
-		if (phdrs[i].p_flags & PF_R)
-			printf("R");
-		if (phdrs[i].p_flags & PF_W)
-			printf("W");
-		if (phdrs[i].p_flags & PF_X)
-			printf("X");
-
-		printf("\n");
+		print_load_segment(&phdrs[i], i);
 	}
 
 	printf("\nEntry point:\n");
 	printf("  VA     : 0x%lx\n", header.e_entry);
 
-	long offset = virtual_to_offset(
+	offset = virtual_to_offset(
 		phdrs,
 		header.e_phnum,
 		header.e_entry
@@ -127,6 +224,8 @@ int main(int argc, char **argv)
 		printf("  Offset : 0x%lx\n", offset);
 	else
 		printf("  Offset : introuvable\n");
+
+	print_sections(file, &header);
 
 	free(phdrs);
 	fclose(file);
